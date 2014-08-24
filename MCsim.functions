@@ -1,0 +1,176 @@
+## The following three functions generate random samples of true calendric ages drawn from theoretical temporal frequency distributions, as well as an auxiliary density function for one of them (Truncated exponential), for the purpose of illustration
+
+q.unif=function(max.n.per.run,n.runs,open.time,close.time){
+	total.obs=max.n.per.run*n.runs
+	true.age=runif(total.obs,close.time,open.time)
+	rounded.true.age=round(true.age/5,0)*5
+	rounded.true.age.matrix=matrix(rounded.true.age,nrow=max.n.per.run,ncol=n.runs)
+	return(rounded.true.age.matrix)
+}
+
+q.trunc.expon=function(max.n.per.run,n.runs,open.time,close.time,open.N_t,close.N_t){
+	total.obs=max.n.per.run*n.runs
+	time.dif=open.time-close.time
+	g.rate=log(close.N_t/open.N_t)/time.dif
+	ran.cdf.vec=runif(total.obs)
+	true.age=open.time-log(ran.cdf.vec*(exp(g.rate*time.dif)-1)+1)/g.rate
+	rounded.true.age=round(true.age/5,0)*5
+	rounded.true.age.matrix=matrix(rounded.true.age,nrow=max.n.per.run,ncol=n.runs)
+	return(rounded.true.age.matrix)
+}
+
+d.trunc.expon=function(x,open.time,close.time,open.N_t,close.N_t){
+	time.dif=open.time-close.time
+	g.rate=log(close.N_t/open.N_t)/time.dif
+	density=ifelse(
+		x>open.time|x<close.time,
+		0,
+		(g.rate/(exp(g.rate*(open.time-close.time))-1))*exp(g.rate*(open.time-x)))
+	return(density)
+}
+
+
+
+
+
+## The following four functions stochastically map true calendric ages into true 14C ages (first two functions) then into measured 14C age estimates (last two functions)
+
+true.rc.age=function(x,calcurve){
+	conv.index=which(calcurve[,1]==x)
+	dispersion=rnorm(1,calcurve[conv.index,2],calcurve[conv.index,3])
+	return(dispersion)
+}
+
+true.rc.iter=function(matrix.object,calcurve){
+	true.rc=matrix(0,nrow=nrow(matrix.object),ncol=ncol(matrix.object))
+	for (i in 1:length(matrix.object)){
+		true.rc[i]=true.rc.age(matrix.object[i],calcurve)
+	}
+	return(true.rc)
+}
+
+i.m.offset=function(x,error){return(x+rnorm(1,0,error))}
+
+i.m.offset.iter=function(matrix.object,error){
+	offset.rc=matrix(0,nrow=nrow(matrix.object),ncol=ncol(matrix.object))
+	for (i in 1:length(matrix.object)){
+		offset.rc[i]=i.m.offset(matrix.object[i],error)
+	}
+	return(offset.rc)
+}
+
+
+
+
+
+## This function implements a simulation in which a summed probability distribution is generated for a specified number of runs, requiring a matrix in which columns represent sample runs of measured 14C ages.  It also generates percentile plug-in estimators
+spd.simulation=function(cl,n.runs,n.per.run,offset.rc.dates.mat,offset.error,calcurve,resolution){
+	# (1) Preliminary: The following operations create objects in the temporary function space that make the function more efficient and/or that will be passed into subsequent function calls.
+	# They inherit the 14C age estimate matrix, measurement error, calibration curve, and resolution specified in the higher-order function call.
+	upper.rc.bound=max(offset.rc.dates.mat)+3*offset.error
+	clipping.index=min(which(calcurve[,2]-3*calcurve[,3]<=upper.rc.bound))
+	clipped.calcurve=calcurve[clipping.index:nrow(calcurve),]
+	rownames(clipped.calcurve)=1:nrow(clipped.calcurve)
+	effective.rc.range=seq(round(max(clipped.calcurve[,2]+3*clipped.calcurve[,3])/5)*5,0,-resolution)
+	clipped.cc.mat=matrix(0,nrow=length(effective.rc.range),ncol=nrow(clipped.calcurve))
+		for (j in 1:ncol(clipped.cc.mat)){
+			clipped.cc.mat[,j]=dnorm(effective.rc.range,clipped.calcurve[j,2],clipped.calcurve[j,3])
+		}
+	clipped.offset.rc.dates.mat=offset.rc.dates.mat[1:(n.per.run),1:(n.runs)]
+
+	# (2a) The following function will be used to transform individual 14C age estimates into probabilistic calendric age estimates.
+	# It will be called repeatedly every time the next function is called, the latter which will also be called repeatedly.
+	# It inherits the 14C age estimate specified in its call, which is extracted from the matrix of estimates specified in the higher-order (simulation) function.
+	# It also implicitly inherits the measurement error specified in the higher-order function call.  (At present, it is designed to handle a single, constant measurement error.  This will need to be addressed in the future for variable-error simulations)
+	# It also implicitly inherits the truncated 14C timeline, truncated calibration curve, and calibration curve matrix created in the preliminary step, (1).
+	# Its output is a vector of an approximate calendric age estimate, scaled so that vector sums to 1.
+	sim.cal=function(rc.age.est){
+		rc.pdf=dnorm(effective.rc.range,rc.age.est,offset.error)
+		joint.probs=rc.pdf*clipped.cc.mat
+		summed.joint.probs=colSums(joint.probs)
+		cal.est.pdf=summed.joint.probs/sum(summed.joint.probs)
+		return(cal.est.pdf)
+	}
+
+	# (2b) This function will be used to generate a summed probability distribution for a single run of 14C age estimates
+	# It will be called repeatedly every time the next operation is executed.
+	# It inherits a set of 14C age estimates specified in its call, which is extracted by column from the matrix of estimates specified in the higher-order (simulation) function.
+	# It also implicitly inherits the run size specified in the higher-order function call.
+	# It also implicitly inherits the truncated calibration curve created in the preliminary step.
+	# It employs the simulation function created in step (2a).
+	# Its output is a vector of an spd, though one that is scaled so that vector sums to 1.
+	sim.spd.calc=function(run.of.rc.ages){
+		run.pdfs=sapply(X=run.of.rc.ages,FUN=sim.cal,simplify=TRUE)
+		spd.raw=rowSums(run.pdfs)
+		spd.rescaled=spd.raw/sum(spd.raw)
+		return(spd.rescaled)
+	}
+
+	# (3) The following operations iteratively create spds for all runs in the simulation.
+	# They inherit the the number of runs and the run size specified in the higher-order function call.
+	# They also inherit the clipped calibration curve and clipped matrix of 14C age estimates created in step (1)
+	# They employ the spd generating function created in step (2b).
+	# Their output is a matrix containing one spd per simulation run, by column.
+	# THE ITERATIVE NATURE OF THIS PROCESS IS THE MAIN TIMESUCK ON THE SIMULATION.  If this timesuck is minimized, it will enable faster simulations, larger (and therefore more robust) simulations, or both.  Possible solutions include parallel processing, writing the following code more efficiently, or revising the spd-generating function from step (2b) upon which this step depends to be more efficient.
+	# Update: I have gained considerable speed by parallelizing this step and the next, substituting the 'parApply' in for an analogous 'for' loop, which has lead to a considerable improvement in time.
+	all.runs.spds=parApply(cl=cl,X=clipped.offset.rc.dates.mat,MARGIN=2,FUN=sim.spd.calc)
+
+	# (4) This operation generates a list containing the all-run spd matrix and a run size indicator
+	return(list(all_run_spds=all.runs.spds,calBP_range=clipped.calcurve[,1],run_size=n.per.run))
+}
+
+
+
+
+
+## This function generates inter-run plug-in estimators: quantiles and a sample mean
+interrun.PIE=function(interrun.matrix.object.in.list){
+	perrun.PIE=function(vector.object){
+		return(c(quantile(x=vector.object,probs=c(0.025,0.25,0.5,0.75,0.975),na.rm=T),mean(vector.object)))
+	}
+	PIEs=t(apply(X=interrun.matrix.object.in.list[[1]],FUN=perrun.PIE,MARGIN=1))
+	PIEs=cbind(interrun.matrix.object.in.list[[2]],PIEs)
+	colnames(PIEs)=c("cal BP",colnames(PIEs[,2:6]),"Mean")
+	return(PIEs)
+}
+
+
+
+
+
+## This function generates an object summarizing the moving average slope of the calibration curve, over a specified range of decades
+avg.cc.slope=function(decade.averaging.factor,calcurve){
+	avg.calcurve.slope=matrix(NA,nrow(calcurve),2)
+	avg.calcurve.slope[,1]=calcurve[,1]
+	for (i in (1+decade.averaging.factor):(nrow(avg.calcurve.slope)-decade.averaging.factor)){
+		avg.calcurve.slope[i,2]=(calcurve[(i-decade.averaging.factor),2]-calcurve[(i+decade.averaging.factor),2])/(10*decade.averaging.factor)
+	}
+	return(avg.calcurve.slope)
+}
+
+
+
+
+
+## These functions are elements in a visualization of the percentile plug-in estimators from the output of spd simulation and of the moving average slope of the calibration curve
+IQR.polygon=function(interrun.tfd.object){
+	polygon.xy=cbind(c(interrun.tfd.object[,1],rev(interrun.tfd.object[,1])),c(interrun.tfd.object[,3],rev(interrun.tfd.object[,5])))
+	polygon(polygon.xy[,1],polygon.xy[,2],border="#a6cee3",col="#a6cee3")	
+}
+
+mean.line=function(interrun.tfd.object){
+	lines(interrun.tfd.object[,1],interrun.tfd.object[,7],col="#1f78b4",lwd=2)
+}
+
+median.line=function(interrun.tfd.object){
+	lines(interrun.tfd.object[,1],interrun.tfd.object[,4],col="#1f78b4",lwd=2)
+}
+
+ninetyfive.limits=function(interrun.tfd.object){
+	lines(interrun.tfd.object[,1],interrun.tfd.object[,2],col="#1f78b4",lty=3)
+	lines(interrun.tfd.object[,1],interrun.tfd.object[,6],col="#1f78b4",lty=3)
+}
+
+cc.slope.plot=function(cc.slope.object,lwd,col){
+	lines(cc.slope.object[,1],cc.slope.object[,2],lwd=lwd,col=col)
+}
