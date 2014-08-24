@@ -1,0 +1,310 @@
+##############
+## Figure 1 ##
+##############
+Maschner.et.al.hist=read.csv(file.choose(),header=T)
+combined.freq=rowSums(Maschner.et.al.hist[,5:7])
+calBPdim=c(10000,0)
+count.dim=c(0,25)
+plot(NULL,xlim=calBPdim,ylim=count.dim,xlab="cal BP",ylab="Count")
+	abline(v=seq(10000,0,-500),col="light gray",lty=2)
+	polygon(c(850,750,750,850),c(-100,-100,100,100),col="#a6cee3",border="#a6cee3")
+	for (i in 1:nrow(Maschner.et.al.hist)){
+		polygon(c(Maschner.et.al.hist[i,3],Maschner.et.al.hist[i,4],Maschner.et.al.hist[i,4],Maschner.et.al.hist[i,3]),c(0,0,combined.freq[i],combined.freq[i]),col="dark gray",border="black")
+	}
+	abline(h=0)
+##############
+##############
+
+
+
+
+
+##############
+## Figure 2 ##
+##############
+intesum=function(n.cluster.workers,dates,calcurve){
+	# (1) Preliminary: The following operations create objects in the temporary function space that make the function more efficient and/or that will be passed into subsequent function calls.
+	# They inherit the list of 14C age estimates (SEs included) and the calibration curve specified in the higher-order function call.
+	library(parallel)
+	upper.rc.bound=max(dates[,2]+3*dates[,3])
+	clipping.index=min(which(calcurve[,2]-3*calcurve[,3]<=upper.rc.bound))
+	clipped.calcurve=calcurve[clipping.index:nrow(calcurve),]
+	rownames(clipped.calcurve)=1:nrow(clipped.calcurve)
+	cal.ages.mat=matrix(0,nrow=nrow(clipped.calcurve),ncol=nrow(dates))
+	
+	# (2) The following two functions are used to calibrate individual 14C age estimates
+	joint.prob=function(rcybp,lab.est,lab.SE,cc.ctr,cc.SD){
+		dnorm(rcybp,lab.est,lab.SE)*dnorm(rcybp,cc.ctr,cc.SD)
+	}
+
+	intecal=function(clipped.calcurve,date){
+		raw.cal=rep(0,nrow(clipped.calcurve))
+		for (i in 1:length(raw.cal)){
+			raw.cal[i]=integrate(
+				f=joint.prob,lab.est=as.numeric(date[2]),lab.SE=as.numeric(date[3]),cc.ctr=clipped.calcurve[i,2],cc.SD=clipped.calcurve[i,3],
+				lower=as.numeric(date[2])-4*as.numeric(date[3]),upper=as.numeric(date[2])+4*as.numeric(date[3])
+			)[[1]]
+		}
+		return(raw.cal/sum(raw.cal))
+	}
+
+	# (3)
+	cl=makeCluster(n.cluster.workers)
+	cal.ages.mat=parApply(cl=cl,X=dates,MARGIN=1,FUN=intecal,clipped.calcurve=clipped.calcurve)
+	stopCluster(cl)
+	raw.spd=rowSums(cal.ages.mat)
+
+	return(list(
+		spd=cbind(clipped.calcurve[,1],raw.spd/sum(raw.spd)),
+		sample.size=nrow(dates)
+	))
+}
+
+IntCal13=read.csv(file.choose(),header=T)
+Kod.Min.Highconf=read.csv(file.choose(),header=T)
+Kod.Min.Highconf.spd=intesum(4,Kod.Min.Highconf,IntCal13)
+Kod.spd.polygon=cbind(
+	c(Kod.Min.Highconf.spd[[1]][,1],rev(Kod.Min.Highconf.spd[[1]][,1])),
+	c(rep(0,length(Kod.Min.Highconf.spd[[1]][,2])),rev(Kod.Min.Highconf.spd[[1]][,2]))
+)
+calBPdim=c(10000,0)
+prob.dim=c(0,0.008)
+plot(NULL,xlim=calBPdim,ylim=prob.dim,xlab="cal BP",ylab="probability mass (five-year bins")
+	abline(v=seq(10000,0,-500),col="light gray",lty=2)
+	polygon(c(850,750,750,850),c(-100,-100,100,100),col="#a6cee3",border="#a6cee3")
+	polygon(Kod.spd.polygon[,1],Kod.spd.polygon[,2],col="dark gray",border="black")
+	abline(h=0)
+##############
+##############
+
+
+
+
+
+##############
+## Figure 3 ##
+##############
+q.trunc.exp=function(opening.time,closing.time,opening.N,closing.N,cdf){
+	tdif=closing.time-opening.time
+	g.rate=log(closing.N/opening.N)/tdif
+	qte=opening.time+log(1+cdf*(exp(g.rate*tdif)-1))/g.rate
+	return(qte)
+}
+
+d.trunc.exp=function(time.of.interest,opening.time,closing.time,opening.N,closing.N){
+	tdif=abs(closing.time-opening.time)
+	g.rate=log(closing.N/opening.N)/tdif
+	d.opening=g.rate/(exp(g.rate*abs(closing.time-opening.time))-1)
+	dte=ifelse(time.of.interest>opening.time|time.of.interest<closing.time,
+		NA,
+		d.opening*exp(g.rate*abs(time.of.interest-opening.time))
+	)
+	return(dte)
+}
+
+opening.time=7500
+closing.time=0
+opening.N=500
+closing.N=10000
+n.sims=200
+
+cdf.vec=runif(n.sims)
+
+pop.sim.samp=q.trunc.exp(opening.time,closing.time,opening.N,closing.N,cdf.vec)
+sorted.pop.sim.samp=sort(pop.sim.samp,decreasing=T)
+expected.samp=q.trunc.exp(opening.time,closing.time,opening.N,closing.N,cumsum(rep(1/n.sims,n.sims)))
+model.curve=d.trunc.exp(7500:0,opening.time,closing.time,opening.N,closing.N)
+
+par(mfrow=c(2,2),pty="s")
+hist(pop.sim.samp,xlim=c(10000,0),ylim=c(0,0.0005),freq=F,xlab="cal BP",main="tfd as histogram\nand rug plot")
+	box(lwd=1)
+	abline(h=0)
+	rug(pop.sim.samp)
+	lines(c(7500,7500:0,0),c(0,model.curve,0),lwd=2,col="#a6cee3")
+	text(9000,0.00045,"A",font=2)
+plot(c(7500,7500:0,0),c(0,model.curve,0),xlim=c(10000,0),ylim=c(0,0.0005),"l",lwd=2,col="#a6cee3",xlab="cal BP",ylab="Density",main="tfd as KDE\nand rug plot")
+	abline(h=0)
+	rug(pop.sim.samp)
+	lines(density(pop.sim.samp,kernel="epan",from=0),lwd=2,col="#33a02c")
+	text(9000,0.00045,"B",font=2)
+plot(expected.samp,sorted.pop.sim.samp,xlim=c(10000,0),ylim=c(10000,0),xlab="expected sample\n(cal BP)",ylab="observed sample\n(cal BP)",main="Q-Q plot")
+	lines(c(10000,0),c(10000,0))
+	rug(expected.samp,side=1)
+	rug(sorted.pop.sim.samp,side=2)
+	text(9000,1000,"C",font=2)
+##############
+##############
+
+
+
+
+
+##############
+## Figure 4 ##
+##############
+run=rnorm(n.runs,calcurve[sim.index,2],calcurve[sim.index,3])
+run.offset=run+rnorm(n.runs,0,50)
+cal.sim=slow.cal(cbind(rep(NA,n.runs),run.offset,rep(50,n.runs)),calcurve)
+col.scheme=c("#a6cee3","#1f78b4","#33a02c")
+
+# Set-up
+	par(oma=c(4,4,4,4))
+	figure.frame=layout(matrix(c(1,2),2,2))
+		layout.show(figure.frame)
+	calBPdim=c(12700,11300)
+	A.y.dim=c(9900,10800)
+	B.y.dim=c(0,max(cal.sim[,2:ncol(cal.sim)])*1.1)
+# Refraction-dispersion paths
+	par(mar=c(0,1,0,1))
+	plot(NULL,type="n",xlim=calBPdim,ylim=A.y.dim,axes=F,xlab="",ylab="")
+	box(lwd=2)
+	lines(calcurve[,1],envelope.upper.bound)
+	lines(calcurve[,1],envelope.lower.bound)
+	for (i in 1:n.runs){
+		lines(rep(12000,2),c(100000,run[i]),lwd=2,col=col.scheme[i])
+	}
+	for (i in 1:n.runs){
+		lines(c(12000,12750),c(run[i],run[i]),lwd=2,col=col.scheme[i])
+	}
+	for (i in 1:n.runs){
+		lines(rep(12750,2),c(run[i],run.offset[i]),lwd=3,col=col.scheme[i])
+	}
+	text(12700,9900+(10800-9900)*0.9,"A",font=2,cex=1.5)
+	axis(2,seq(9900,10800,200))
+	axis(3,seq(12700,11300,-100))
+	mtext("rcybp",2,3,cex=0.8)
+# Calibrated pds
+	par(mar=c(0,1,0,1))
+	plot(NULL,type="n",xlim=calBPdim,ylim=B.y.dim,axes=F,xlab="",ylab="")
+	box(lwd=2)
+	abline(h=0,col="black")
+	abline(v=0,col="black")
+	for (i in 2:ncol(cal.sim)){
+		lines(cal.sim[,1],cal.sim[,i],lwd=2,col=col.scheme[i-1])
+	}
+	text(12700,max(cal.sim[,2:ncol(cal.sim)])*1.1*0.9,"B",font=2,cex=1.5)
+	axis(4,seq(0,0.03,0.01))
+	axis(1,seq(12700,11300,-100))
+	mtext("probability mass\n(five-year bins)",4,4,cex=0.8)
+title(xlab="cal BP",outer=T)
+##############
+##############
+
+
+
+
+
+##############
+## Figure 5 ##
+##############
+n.sims=10000
+true.rc.age=rnorm(n.sims,10237,47)
+i.m.offset=rnorm(n.sims,0,50)
+measured.rc.age=true.rc.age+i.m.offset
+model.x=seq(11000,9000,-1)
+true.model.y=dnorm(model.x,10237,47)
+measured.model.y=dnorm(model.x,10237,sqrt(47^2+50^2))
+norm.summary=cbind(seq(11000,9000,-1),dnorm(seq(11000,9000,-1),mean(measured.rc.age),sd(measured.rc.age)))
+
+par(mfrow=c(2,1))
+hist(true.rc.age,freq=F,main="True age",xlab="rcy BP",xlim=c(10600,9900),ylim=c(0,0.009))
+	abline(h=0)
+	rug(true.rc.age)
+	lines(model.x,true.model.y,lwd=2,col="#a6cee3")
+	lines(density(true.rc.age),lwd=2,col="#33a02c")
+	text(10550,0.008,"A",font=2)
+hist(measured.rc.age,freq=F,main="Measured age",xlab="rcy BP",xlim=c(10600,9900),ylim=c(0,0.009))
+	abline(h=0)
+	rug(measured.rc.age)
+	lines(model.x,measured.model.y,lwd=2,col="#a6cee3")
+	lines(density(measured.rc.age),lwd=2,col="#33a02c")
+	text(10550,0.008,"B",font=2)
+mean(true.rc.age)
+sd(true.rc.age)
+mean(measured.rc.age)
+sd(measured.rc.age)
+##############
+##############
+
+
+
+
+
+##############
+## Figure 6 ##
+##############
+slow.cal=function(dates,calcurve){
+	threshold.rcybp=max(dates[,2]+4*dates[,3])
+	clip.age.index=min(which(calcurve[,2]-4*calcurve[,3]<=threshold.rcybp))
+	clipped.calcurve=calcurve[clip.age.index:nrow(calcurve),]
+
+	joint.pd=function(rcybp,lab.est,lab.SE,cc.ctr,cc.SD){
+		dnorm(rcybp,lab.est,lab.SE)*dnorm(rcybp,cc.ctr,cc.SD)
+	}
+
+	raw.cal=matrix(nrow=nrow(clipped.calcurve),ncol=nrow(dates))
+	for (i in 1:nrow(raw.cal)){
+		for (j in 1:ncol(raw.cal)){
+			raw.cal[i,j]=integrate(f=joint.pd,lab.est=dates[j,2],lab.SE=dates[j,3],cc.ctr=clipped.calcurve[i,2],cc.SD=clipped.calcurve[i,3],lower=dates[j,2]-4*dates[j,3],upper=dates[j,2]+4*dates[j,3])[[1]]
+
+		}
+	}
+
+	scaled.cal=matrix(nrow=nrow(raw.cal),ncol=ncol(raw.cal))
+	for (i in 1:nrow(scaled.cal)){
+		for (j in 1:ncol(scaled.cal)){
+			scaled.cal[i,j]=raw.cal[i,j]/(sum(raw.cal[,j]))
+		}
+	}
+
+	return(cbind(clipped.calcurve[,1],scaled.cal))
+}
+
+faux.dates=rbind(c(NA,875,30),c(NA,475,30))
+comp.dates=slow.cal(faux.dates,calcurve)
+head(comp.dates)
+
+par(oma=c(1,1,1,1))
+Guildersonlike=layout(
+	matrix(c(2,1,0,3),nrow=2,ncol=2,byrow=T),
+	c(1,3),
+	c(3,1)
+)
+layout.show(Guildersonlike)
+par(mar=c(0,0,0,0))
+plot(calcurve[,1],calcurve[,2]-2*calcurve[,3],type="l",xlim=c(1200,0),ylim=c(0,1200),main=NULL,axes=F,xlab="",ylab="")
+	lines(calcurve[,1],calcurve[,2]+2*calcurve[,3])
+	abline(h=0,col="light gray")
+	abline(v=0,col="light gray")
+	lines(c(-100,60000),c(-100,60000),lty=3)
+	box(lwd=2)
+par(mar=c(0,4,0,0))
+	plot(5*dnorm(seq(755,995,5),faux.dates[1,2],faux.dates[1,3]),seq(755,995,5),"l",xlim=c(0.2,0),ylim=c(0,1200),xlab="probability density",axes=F,ylab="rcyBP",col="#33a02c",lwd=2)
+	lines(5*dnorm(seq(355,595,5),faux.dates[2,2],faux.dates[2,3]),seq(355,595,5),col="#1f78b4",lwd=2)
+	abline(v=0,lwd=2)
+	box(lwd=2)
+	axis(2,seq(0,1200,100))
+par(mar=c(4,0,0,0))
+	plot(comp.dates[,1],comp.dates[,3],"l",lwd=2,col="#1f78b4",xlim=c(1200,0),ylim=c(0,0.2),axes=F,xlab="cal BP",ylab="")
+	lines(comp.dates[,1],comp.dates[,2],lwd=2,col="#33a02c")
+	abline(h=0,lwd=2)
+	box(lwd=2)
+	axis(1,seq(1200,0,-100))
+##############
+##############
+
+
+
+
+
+##############
+## Figure 9 ##
+##############
+IntCal13=read.csv(file.choose(),header=T)
+calBPdim=c(10000,0)
+error.dim=c(0,25)
+plot(NULL,xlim=calBPdim,ylim=error.dim,xlab="cal BP",ylab="calibration curve error (rcy)")
+	abline(v=seq(10000,0,-500),col="light gray",lty=2)
+	lines(IntCal13[,1],IntCal13[,3])
+##############
+##############
